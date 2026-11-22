@@ -1,14 +1,25 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
+// Shadow Circuit — boot and the one loop: input is read every frame, the
+// world advances in fixed 1/60 s steps (several in a slow frame, none in a
+// fast one), and the renderer paints what is there. The game moves between
+// six screens: title, play, paused, caught, floor clear and victory.
 //
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
+// ?seed=N fixes the cosmetic random seed. ?shot=start|play|play2|end (with
+// &seed=N) stages that scene instead of running the loop, paints it twice
+// and sets window.__shotReady for a screenshot.
+import { BEST_KEY, STEP } from './config.js';
 import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+import { createWorld, EVENT_CAUGHT, EVENT_CLEAR, EVENT_OBJECTIVE } from './world.js';
+import { ACTION_CONFIRM, ACTION_PAUSE, ACTION_RETRY, createInput } from './input.js';
+import {
+  createRenderer,
+  MENU_BUTTON,
+  SCREEN_CAUGHT,
+  SCREEN_CLEAR,
+  SCREEN_PAUSED,
+  SCREEN_PLAY,
+  SCREEN_TITLE,
+  SCREEN_VICTORY,
+} from './render.js';
 import { stageShot } from './shots.js';
 
 /** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
@@ -36,7 +47,7 @@ function saveBest(value) {
   try {
     window.localStorage.setItem(BEST_KEY, String(value));
   } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
+    // Storage can be off (private windows): the best then lasts this visit only.
   }
 }
 
@@ -59,47 +70,99 @@ function runGame() {
   let accumulator = 0;
   let last = performance.now();
 
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
+  // Screen readers (and anyone watching the page's text) hear the screen changes.
   function announce(message) {
     status.textContent = message;
   }
 
-  function startGame() {
-    world.reset();
+  function startRun() {
+    world.loadLevel(0);
     accumulator = 0;
     screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
+    announce(`Playing. ${world.state.levelName}. Steal the ${world.state.objectiveName}, then reach the exit.`);
   }
 
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
+  function retryLevel() {
+    world.loadLevel(world.state.levelIndex);
+    accumulator = 0;
+    screen = SCREEN_PLAY;
+    announce(`Retrying. ${world.state.levelName}.`);
+  }
+
+  function onClear() {
+    const cleared = world.state.levelIndex + 1;
+    if (cleared > best) {
+      best = cleared;
       saveBest(best);
     }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
+    if (cleared >= world.LEVEL_COUNT) {
+      screen = SCREEN_VICTORY;
+      announce('Circuit complete. All three floors cleared.');
+    } else {
+      screen = SCREEN_CLEAR;
+      announce(`${world.state.levelName} clear. Press Space for the next floor.`);
+    }
+  }
+
+  function onCaught() {
+    screen = SCREEN_CAUGHT;
+    announce(`Caught on ${world.state.levelName}. Press R or Space to try again.`);
+  }
+
+  /** The shared confirm action: button click or Space/Enter, per screen. */
+  function confirm() {
+    if (screen === SCREEN_TITLE || screen === SCREEN_VICTORY) startRun();
+    else if (screen === SCREEN_CAUGHT) retryLevel();
+    else if (screen === SCREEN_CLEAR) {
+      world.loadLevel(world.state.levelIndex + 1);
+      accumulator = 0;
+      screen = SCREEN_PLAY;
+      announce(`Playing. ${world.state.levelName}.`);
+    } else if (screen === SCREEN_PAUSED) {
+      screen = SCREEN_PLAY;
+      announce('Playing.');
+    }
   }
 
   function handleActions() {
     const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
+    // Clicks only count on menu screens, and only on the button itself.
+    let clickedButton = false;
+    for (const click of input.takeClicks()) {
+      if (screen === SCREEN_PLAY) continue;
+      const point = renderer.toLogical(click.x, click.y);
+      if (
+        point.x >= MENU_BUTTON.x && point.x <= MENU_BUTTON.x + MENU_BUTTON.w &&
+        point.y >= MENU_BUTTON.y && point.y <= MENU_BUTTON.y + MENU_BUTTON.h
+      ) clickedButton = true;
+    }
+    if (clickedButton) {
+      confirm();
+      return;
+    }
+    if (actions & ACTION_RETRY && (screen === SCREEN_PLAY || screen === SCREEN_CAUGHT || screen === SCREEN_PAUSED)) {
+      retryLevel();
+      return;
+    }
+    if (actions & ACTION_CONFIRM && screen !== SCREEN_PLAY) confirm();
     else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
       announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
+    } else if (actions & ACTION_PAUSE && screen === SCREEN_PAUSED) {
       screen = SCREEN_PLAY;
       announce('Playing.');
     }
   }
 
   function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
+    if (screen === SCREEN_TITLE || screen === SCREEN_VICTORY) {
+      world.step(STEP, { x: 0, y: 0 }, false); // patrols keep walking behind the panel
       return;
     }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
+    const events = world.step(STEP, input.axis(), input.sneaking());
+    if (events & EVENT_CAUGHT) onCaught();
+    else if (events & EVENT_CLEAR) onClear();
+    else if (events & EVENT_OBJECTIVE) announce('Core stolen. Reach the exit.');
   }
 
   function frame(now) {
@@ -107,8 +170,8 @@ function runGame() {
     accumulator += Math.min((now - last) / 1000, MAX_FRAME);
     last = now;
     handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
+    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY || screen === SCREEN_VICTORY) {
+      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY || screen === SCREEN_VICTORY)) {
         step();
         accumulator -= STEP;
       }
@@ -118,7 +181,7 @@ function runGame() {
     renderer.draw(world.state, screen, best);
   }
 
-  // Leaving the tab pauses a running game rather than letting blocks fall unseen.
+  // Leaving the tab pauses a running game rather than letting patrols run unseen.
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
@@ -126,7 +189,7 @@ function runGame() {
     }
   });
 
-  announce('Block Dodger. Press Space or click to start.');
+  announce('Shadow Circuit. Press Space or click Infiltrate to start.');
   requestAnimationFrame(frame);
 }
 

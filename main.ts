@@ -2,9 +2,11 @@
 // game/ folder, plain static files a desktop browser loads offline (game/index.html and its ES
 // modules, no library and no network request), and the program hands it in. It copies game/ and
 // screenshots/ from beside this file to /output and writes /output/dossier.json, the summary the
-// judge reads, with the vendored make.fun library. A starting point, not a winner: Block Dodger, a
-// plain 2D canvas game where a paddle dodges falling blocks and catches coins, with a title screen,
-// score, lives and levels, game over and restart, flat colours and no sound. Build your own game
+// judge reads, with the vendored make.fun library. The game: Shadow Circuit, an original top-down
+// 2D stealth game in plain canvas JavaScript — sneak through three guarded facility floors, slip
+// past patrols whose vision cones are blocked by walls and crates, keep the detection meter from
+// filling, steal each floor's data core and reach the exit unseen, with title, HUD, caught,
+// floor-clear and victory screens. Build your own game
 // (any genre, any library you vendor under game/, or none), put your 3 or 4 PNG or JPEG screenshots
 // in screenshots/ (the first by name is the cover) and run it.
 //
